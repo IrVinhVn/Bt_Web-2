@@ -1,4 +1,5 @@
 <Solution>
   <Project Path="Bai1_AES/Bai1_AES.csproj" />
+  <Project Path="Bai2_RSA/Bai2_RSA.csproj" Id="1847475a-5c83-4057-9af2-a0ae8b66e99c" />
   <Project Path="CryptoCore/CryptoCore.csproj" />
 </Solution>
