@@ -36,6 +36,7 @@ public sealed partial class MainForm : Form
         tabs.TabPages.Add(BuildEncryptTab());
         tabs.TabPages.Add(BuildBenchTab());
         tabs.TabPages.Add(BuildHashTab());
+        tabs.TabPages.Add(BuildSignTab());
 
         var status = new StatusStrip();
         status.Items.Add(statusKey);
