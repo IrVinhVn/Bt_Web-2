@@ -127,6 +127,86 @@ public static class RsaService
     /// <summary>Giải mã bằng khoá bí mật (d hoặc p, q, dP, dQ, qInv).</summary>
     public static byte[] Decrypt(RSA rsa, byte[] cipher) => rsa.Decrypt(cipher, RSAEncryptionPadding.OaepSHA256);
 
+    // ------------------------------------------------------------------ 7. Đánh giá tốc độ
+    public sealed class BenchRow
+    {
+        public int KeyBits { get; init; }
+        public string Operation { get; init; }
+        public string KeyUsed { get; init; }
+        public int ExponentBits { get; init; }
+        public int Iterations { get; init; }
+        public double TotalMs { get; init; }
+        public double AvgMs => TotalMs / Iterations;
+        public double OpsPerSecond => Iterations / (TotalMs / 1000.0);
+    }
+
+    /// <summary>
+    /// Đo tốc độ các phép toán RSA với từng kích thước khoá.
+    ///  - Mã hoá OAEP / Xác minh chữ ký: dùng khoá công khai (e = 65537, chỉ 17 bit).
+    ///  - Giải mã OAEP / Ký: dùng khoá bí mật (d ~ kích thước n), thư viện dùng CRT để tăng tốc.
+    ///  - ModPow "thô" (BigInteger): so sánh trực tiếp m^e mod n với c^d mod n, và c^d có/không dùng CRT.
+    /// </summary>
+    public static List<BenchRow> Benchmark(int[] keySizes, int iterations, IProgress<string> log = null, CancellationToken ct = default)
+    {
+        var rows = new List<BenchRow>();
+        byte[] data = RandomNumberGenerator.GetBytes(32); // ví dụ: 1 khoá AES-256
+        byte[] hash = SHA256.HashData(data);
+
+        foreach (int bits in keySizes)
+        {
+            log?.Report($"Sinh khoá RSA-{bits}...");
+            using RSA rsa = RSA.Create(bits);
+            RSAParameters p = rsa.ExportParameters(true);
+            var n = ToBig(p.Modulus); var e = ToBig(p.Exponent); var d = ToBig(p.D);
+            var P = ToBig(p.P); var Q = ToBig(p.Q); var dp = ToBig(p.DP); var dq = ToBig(p.DQ); var qInv = ToBig(p.InverseQ);
+            int eBits = (int)e.GetBitLength(), dBits = (int)d.GetBitLength();
+
+            byte[] cipher = rsa.Encrypt(data, RSAEncryptionPadding.OaepSHA256);
+            byte[] sig = rsa.SignHash(hash, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+            BigInteger m = ToBig(RandomNumberGenerator.GetBytes(bits / 8 - 1));
+            BigInteger c = BigInteger.ModPow(m, e, n);
+
+            // ModPow thô với d (không CRT) rất chậm ở khoá lớn → giảm số lần lặp cho 2 phép này.
+            int heavyIterations = Math.Max(5, iterations / Math.Max(1, bits / 512));
+
+            void Run(string op, string keyUsed, int expBits, Action action, int count = 0)
+            {
+                ct.ThrowIfCancellationRequested();
+                if (count <= 0) count = iterations;
+                action(); // warm-up
+                var sw = Stopwatch.StartNew();
+                for (int i = 0; i < count; i++) action();
+                sw.Stop();
+                var row = new BenchRow
+                {
+                    KeyBits = bits, Operation = op, KeyUsed = keyUsed, ExponentBits = expBits,
+                    Iterations = count, TotalMs = sw.Elapsed.TotalMilliseconds
+                };
+                rows.Add(row);
+                log?.Report($"RSA-{bits} | {op,-34} | {row.AvgMs,10:F4} ms/lần | {row.OpsPerSecond,10:F0} lần/s");
+            }
+
+            Run("Mã hoá OAEP-SHA256", "Public (n,e)", eBits, () => rsa.Encrypt(data, RSAEncryptionPadding.OaepSHA256));
+            Run("Giải mã OAEP-SHA256", "Private (CRT)", dBits, () => rsa.Decrypt(cipher, RSAEncryptionPadding.OaepSHA256));
+            Run("Xác minh chữ ký PKCS#1", "Public (n,e)", eBits, () => rsa.VerifyHash(hash, sig, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1));
+            Run("Ký PKCS#1 v1.5", "Private (CRT)", dBits, () => rsa.SignHash(hash, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1));
+            Run("ModPow thô: m^e mod n", "Public (n,e)", eBits, () => BigInteger.ModPow(m, e, n));
+            Run("ModPow thô: c^d mod n (không CRT)", "Private (n,d)", dBits, () => BigInteger.ModPow(c, d, n), heavyIterations);
+            Run("ModPow thô: c^d mod n (có CRT)", "Private (p,q,dP,dQ,qInv)", dBits, () => CrtDecrypt(c, P, Q, dp, dq, qInv), heavyIterations);
+        }
+        return rows;
+    }
+
+    /// <summary>Giải mã RSA bằng Định lý số dư Trung Hoa (CRT): nhanh hơn ~3-4 lần so với c^d mod n.</summary>
+    public static BigInteger CrtDecrypt(BigInteger c, BigInteger p, BigInteger q, BigInteger dp, BigInteger dq, BigInteger qInv)
+    {
+        BigInteger m1 = BigInteger.ModPow(c % p, dp, p);
+        BigInteger m2 = BigInteger.ModPow(c % q, dq, q);
+        BigInteger h = (qInv * (m1 - m2)) % p;
+        if (h.Sign < 0) h += p;
+        return m2 + h * q;
+    }
+
     public static BigInteger ToBig(byte[] bigEndianUnsigned) => new BigInteger(bigEndianUnsigned, isUnsigned: true, isBigEndian: true);
 
     /// <summary>Đổi BigInteger thành mảng byte big-endian dài đúng 'length' byte (thêm 0 ở đầu nếu thiếu).</summary>
