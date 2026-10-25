@@ -31,6 +31,7 @@ public sealed partial class MainForm : Form
         MinimumSize = new Size(950, 700);
 
         tabs.TabPages.Add(BuildKeysTab());
+        tabs.TabPages.Add(BuildPemTab());
 
         var status = new StatusStrip();
         status.Items.Add(statusKey);
